@@ -70,6 +70,41 @@
 ### 🟡8.主控制器（Main_Control）
 - **功能简述**：CPU的中枢神经。负责宏观调控所有数据通路。
 #### 具体功能介绍：
+- 输入非常之清爽啊，就只有一个7位的Opcode（由Decoder生成）
+- 我们可以发现Opcode的低2位都是11，因此可以忽略，只根据它的[6:2]段来区分指令类型
+- 首先根据Opcode的高5位判断出8种基础指令类型：is_Load、is_IType、is_Store、is_RType、is_Lui、is_Branch、is_JALR、is_JAL(你可能会感到奇怪为什么要拉这些线出来？后面解释每种信号的作用你会发现，其实这是在根据后面的需求来这边拉线的，所以以上先给出的信号是提前先整理了的。
+- is_Lui信号作为ALU的A端信号的选择信号，选择是将RegisterFile的Rs1_Data输入给ALU的A还是将无污染的纯净00000000输入给ALU的A
+- Branch和Jump信号是给Branch_Ctrl模块的
+- is_JALR信号是给PC综合子模块的
+- ALUSrc作为RegisterFile的Rs2输出的选择端，选择rs2数据还是Imm_Out,RTFM了解R、I、Load、JALR、JAL、Lui这些指令的共性，会发现他们的需求是将Imm_Out输送给ALU的B，而不是rs2的数据
+- is_Store信号决定了RAM写使能信号的生成
+- is_Load信号决定了RAM读使能信号的生成，同时也作为MemToReg信号，决定是将ALU计算的结果送回RegisterFile还是将从RAM种读出的数据送回RegisterFile
+- 最后ALUOp信号由is_RType、is_IType、is_Branch信号共同产生，具体逻辑要结合ALUOp的作用去理解，作用请看回第七点（ALU_Control模块），看看ALUOp是干什么的，就明晰了
+#### 设计图：<img width="1796" height="1399" alt="image" src="https://github.com/user-attachments/assets/0158cfc5-0be8-4482-bc5c-87473f9d21f6" />
+### 🟡9.访存单元（LSU）
+- **功能简述**：CPU与外部世界沟通的海关道岔
+#### 具体功能介绍：
+- 字节对齐与截取：彻底解决了 RISC-V 的小端序字节读写问题。支持 lbu 和 sb 指令。利用地址的低两位 [1:0] 配合多路选择器，精准抠取 32 位字中的特定字节，并在读取时进行严格的零扩展，确保字符串判断逻辑正确运行。
+- 数据的存入RAM：sw和sb指令，通过funct3区分，RTFM搞明白sw和sb具体需要存什么数字
+- 根据ALU_Result判断结果是否处于[ 20000000 , 20040000 )之间，生成isVGA和与之相反的isMem信号
+- 根据MemWrite和isVGA的信号通过与门，来实现如果写数据，但是数据处于我们需要的那个区间就将数据写入RGB视频组件，这个信号称为VGA_WE
+- 接着讲义里提到的由于RGB视频的格式是一个像素数据占3字节. 但为了方便处理, 我们可以将其视为4字节。因此对于从RS2_Data选择出来的数据，我们截取它的低24位作为VGA_data
+- 最后根据ALU_result的[17 : 10]和[9 : 2]两个字段分别生成x、y坐标，最后生成VGA_X、VGA_Y的信号
+#### 设计图：<img width="1638" height="1397" alt="image" src="https://github.com/user-attachments/assets/4befaa5d-6e64-4866-8ebe-7c44c91dc1f8" />
+---
+## 综上，即是我们整个小型CPU各个子模块的具体设计以及顶层封装的全流程了。大家根据这个流程必然可以完成伟大的一生一芯LOGO的打印！
+<img width="1445" height="1280" alt="3326b3a026537c6e7edbd73fb6e10d4b" src="https://github.com/user-attachments/assets/88579771-b7b6-4073-839f-9b4c27510120" />
+
+---
+## 🐛🐛🐛探索过程必然是艰难险阻，Bug频出，太正常不过了，所以我有一些BUG的调试坑在下面给大家列出来，供大家参考
+### ❌ 坑位一：“四字节的时空困局”
+- **案发现场**：程序在第一遍执行函数调用后，陷入死循环，PC 在 00027 和 0029f 之间疯狂横跳。
+- **真凶解析**：在执行 jalr x1, 0(x1) 时，CPU 需要将返回地址保存到 x1 寄存器。但连线错误导致存入的是当前 PC（即 00027），而不是 PC + 4（00028）。函数执行完 ret 时，又跳回了原点，形成闭环。其实就是接线忘记接PC + 4 了。
+### ❌ 坑位二：“幽灵加法”与 lui 污染
+- **案发现场**：时钟跑满，指令疯狂执行，但屏幕死活不亮，VGA_WE（显存写使能）始终为 0。
+- **真凶解析**：lui 是 U-型指令，没有 rs1 字段。但译码器（Decode）“盲目”地切下了第 19:15 位去读寄存器，并将读出的脏数据送入了 ALU。导致 0 + 0x20000000 变成了 脏数据 + 0x20000000，基地址被彻底污染，MMIO 拦截失败。
+- **解决方案**：在 ALU 的 Input A 前方加装一个 2 选 1 防爆门（MUX）。遇到 lui 或 auipc 时，强制阻断寄存器的脏数据，送入纯净的 0 或 PC。我这里用的是is_Lui信号
+
 
 
 
